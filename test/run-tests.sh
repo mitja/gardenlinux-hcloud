@@ -213,10 +213,11 @@ EOF
   CREATED_SERVERS+=("$PREFIX-nat-$RUN_ID")
   natip=$(hcloud server describe "$PREFIX-nat-$RUN_ID" -o json | jq -r .public_net.ipv4.ip)
   natpriv=$(hcloud server describe "$PREFIX-nat-$RUN_ID" -o json | jq -r '.private_net[0].ip')
-  # the hcloud network FABRIC forwards packets with non-local destinations only if the
-  # network object carries a route — without it, internet-bound packets from the SUT never
-  # reach the NAT box no matter what the SUT's own routing table says (standard Hetzner
-  # NAT-gateway pattern; deleted with the network in cleanup)
+  # hcloud private nets are NOT L2: peers talk through the fabric router (the .0.1 network
+  # gateway) — a default route pointing directly at the NAT box IP dies at ARP. The correct
+  # pattern: SUT default via the network gateway + a network-object route 0.0.0.0/0 -> NAT
+  # private IP so the fabric hands internet-bound traffic to the NAT box (standard Hetzner
+  # NAT-gateway design; the route dies with the network in cleanup)
   hcloud network add-route "$net" --destination 0.0.0.0/0 --gateway "$natpriv" >/dev/null
   # the SUT: no public IPv4 (the Cap A/B "0 IPv4" shape); public IPv6 stays for metadata
   hcloud server create --name "$PREFIX-priv-$RUN_ID" --type "$SUT_TYPE" --location "$LOCATION" --image "$IMAGE" \
@@ -243,11 +244,14 @@ EOF
   # the unprivileged systemd-network user — it gets EACCES and silently keeps the old
   # config ("Failed to open ...: Permission denied" in the journal). Any provisioning
   # (MCM user_data included) writing /etc/systemd/network files on GL must chmod 644.
-  check "private-nat:route-netfile-staged" ssh_via "$natip" "$privip" "printf '[Match]\nName=$privname\n\n[Network]\nDHCP=yes\n\n[DHCPv4]\nUseMTU=true\n\n[Route]\nDestination=0.0.0.0/0\nGateway=$natpriv\nGatewayOnLink=yes\n' > /etc/systemd/network/60-gl-nat.network && chmod 644 /etc/systemd/network/60-gl-nat.network && nohup bash -c 'sleep 1; networkctl reload' >/dev/null 2>&1 & sleep 1; exit 0"
+  check "private-nat:route-netfile-staged" ssh_via "$natip" "$privip" "printf '[Match]\nName=$privname\n\n[Network]\nDHCP=yes\n\n[DHCPv4]\nUseMTU=true\n\n[Route]\nDestination=0.0.0.0/0\nGateway=10.98.0.1\nGatewayOnLink=yes\n' > /etc/systemd/network/60-gl-nat.network && chmod 644 /etc/systemd/network/60-gl-nat.network && nohup bash -c 'sleep 1; networkctl reload' >/dev/null 2>&1 & sleep 1; exit 0"
   sleep 12
   check "private-nat:route-netfile-applies" ssh_via "$natip" "$privip" "ip route show default | grep -q via && ip -4 -brief addr show $privname | grep -q '$privip'"
-  check "private-nat:egress-via-nat" ssh_via "$natip" "$privip" 'timeout 15 bash -c "exec 3<>/dev/tcp/packages.gardenlinux.io/443"'
-  check "private-nat:dns-resolves-via-nat" ssh_via "$natip" "$privip" 'getent hosts packages.gardenlinux.io >/dev/null'
+  # v4 literal: a hostname resolves AAAA first and the SUT has no global IPv6 (cloud-init
+  # network config is disabled by design), so bash would burn the timeout on the v6 attempt
+  check "private-nat:egress-via-nat" ssh_via "$natip" "$privip" 'timeout 15 bash -c "exec 3<>/dev/tcp/185.12.64.1/53"'
+  # resolved deprioritizes servers that timed out pre-route — flush + retry until it recovers
+  check "private-nat:dns-resolves-via-nat" ssh_via "$natip" "$privip" 'resolvectl flush-caches 2>/dev/null; resolvectl reset-server-features 2>/dev/null; for i in 1 2 3 4 5 6; do getent hosts packages.gardenlinux.io >/dev/null && exit 0; sleep 5; done; exit 1'
 }
 
 # =========================================================================== run
