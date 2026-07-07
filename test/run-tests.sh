@@ -47,7 +47,11 @@ check() { # check <name> <cmd...> — record pass/fail, keep going
   else FAIL=$((FAIL+1)); RESULTS+=("FAIL $name"); log "  FAIL $name"; fi
 }
 ssh_sut() { local ip=$1; shift; ssh "${SSH_OPTS[@]}" "root@$ip" "$@"; }
-ssh_via() { local jump=$1 ip=$2; shift 2; ssh "${SSH_OPTS[@]}" -o "ProxyJump=root@$jump" "root@$ip" "$@"; }
+# ProxyJump does NOT inherit our host-key/BatchMode options for the HOP connection — it
+# reads ~/.ssh/config defaults, so the hop dies on host-key verification and every jumped
+# check fails regardless of SUT state (this masqueraded as "IPv6-only servers do not
+# bootstrap" for a whole day). ProxyCommand with explicit options is the reliable form.
+ssh_via() { local jump=$1 ip=$2; shift 2; ssh "${SSH_OPTS[@]}" -o "ProxyCommand=ssh -i $WORK/key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -W %h:%p root@$jump" "root@$ip" "$@"; }
 
 cleanup() {
   set +e
@@ -182,7 +186,9 @@ scenario_reboot() {
 # (--without-ipv4 --without-ipv6) CANNOT reach 169.254.169.254 at all (probe: timeout via
 # private gw too) => no cloud-init user_data => unbootstrappable; that mode is a documented
 # platform limit, not a test. The production "0 public IPv4" shape keeps free public IPv6
-# (metadata + bootstrap) + private net for traffic — that is what this scenario builds.
+# + private net for traffic — that is what this scenario builds. v4-less servers still get
+# a CGNAT 100.64/10 DHCPv4 lease on the public NIC including an explicit 169.254.169.254
+# route (verified 2026-07-07) — metadata + user_data work WITHOUT public IPv4 by design.
 # The image must (a) DHCP the private IP, (b) carry static resolvers (our DNS trim),
 # (c) accept a persistent networkd route drop-in (docs/50 §5.1 race fix) and reach v4
 # internet via the NAT box. Also asserts the GL private-NIC *name* — Ubuntu templates
@@ -207,6 +213,11 @@ EOF
   CREATED_SERVERS+=("$PREFIX-nat-$RUN_ID")
   natip=$(hcloud server describe "$PREFIX-nat-$RUN_ID" -o json | jq -r .public_net.ipv4.ip)
   natpriv=$(hcloud server describe "$PREFIX-nat-$RUN_ID" -o json | jq -r '.private_net[0].ip')
+  # the hcloud network FABRIC forwards packets with non-local destinations only if the
+  # network object carries a route — without it, internet-bound packets from the SUT never
+  # reach the NAT box no matter what the SUT's own routing table says (standard Hetzner
+  # NAT-gateway pattern; deleted with the network in cleanup)
+  hcloud network add-route "$net" --destination 0.0.0.0/0 --gateway "$natpriv" >/dev/null
   # the SUT: no public IPv4 (the Cap A/B "0 IPv4" shape); public IPv6 stays for metadata
   hcloud server create --name "$PREFIX-priv-$RUN_ID" --type "$SUT_TYPE" --location "$LOCATION" --image "$IMAGE" \
     --ssh-key "$KEY_NAME" --user-data-from-file "$WORK/userdata.sh" --network "$net" \
@@ -221,8 +232,20 @@ EOF
   log "  private NIC name on GL: ${privname:-unknown} (Ubuntu templates assume ens10 — docs/52 §3)"
   check "private-nat:no-v4-default-route-handed" ssh_via "$natip" "$privip" '! ip -4 route show default | grep -q .'
   check "private-nat:static-dns-baked" ssh_via "$natip" "$privip" "resolvectl dns $privname | grep -q 185.12.64.1"
-  # the docs/50 §5.1 fix, GL edition: persistent [Route] drop-in, survives DHCP renewals
-  check "private-nat:route-dropin-applies" ssh_via "$natip" "$privip" "mkdir -p /etc/systemd/network/99-default.network.d && printf '[Match]\nName=$privname\n[Route]\nDestination=0.0.0.0/0\nGateway=$natpriv\nGatewayOnLink=yes\n' > /etc/systemd/network/60-gl-nat.network && networkctl reload && sleep 3 && ip route show default | grep -q 'via'"
+  # the docs/50 §5.1 fix, GL edition: a dedicated .network file that FULLY owns the private
+  # NIC (DHCP + static default route). networkd applies only the FIRST matching .network
+  # file per link, so a route-only file would displace 99-default and drop the NIC's DHCP —
+  # the exact overwrite-the-IP failure class this scenario exists to catch. Persistent
+  # across lease renewals; this is the template for MCM private-pool user_data on GL.
+  # the reload reconfigures the very NIC this ssh session rides on — detach it (nohup) and
+  # verify from a FRESH connection, else the check kills its own transport and always fails
+  # chmod 644 is LOAD-BEARING: GL's hardened root umask writes 640, and networkd runs as
+  # the unprivileged systemd-network user — it gets EACCES and silently keeps the old
+  # config ("Failed to open ...: Permission denied" in the journal). Any provisioning
+  # (MCM user_data included) writing /etc/systemd/network files on GL must chmod 644.
+  check "private-nat:route-netfile-staged" ssh_via "$natip" "$privip" "printf '[Match]\nName=$privname\n\n[Network]\nDHCP=yes\n\n[DHCPv4]\nUseMTU=true\n\n[Route]\nDestination=0.0.0.0/0\nGateway=$natpriv\nGatewayOnLink=yes\n' > /etc/systemd/network/60-gl-nat.network && chmod 644 /etc/systemd/network/60-gl-nat.network && nohup bash -c 'sleep 1; networkctl reload' >/dev/null 2>&1 & sleep 1; exit 0"
+  sleep 12
+  check "private-nat:route-netfile-applies" ssh_via "$natip" "$privip" "ip route show default | grep -q via && ip -4 -brief addr show $privname | grep -q '$privip'"
   check "private-nat:egress-via-nat" ssh_via "$natip" "$privip" 'timeout 15 bash -c "exec 3<>/dev/tcp/packages.gardenlinux.io/443"'
   check "private-nat:dns-resolves-via-nat" ssh_via "$natip" "$privip" 'getent hosts packages.gardenlinux.io >/dev/null'
 }
