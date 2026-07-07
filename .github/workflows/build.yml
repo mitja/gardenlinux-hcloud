@@ -1,0 +1,65 @@
+# Modeled on builder_example's CI (checkout → ./build <flavor>): all Hetzner flavors, dev
+# signing certs for the USI variants, .raw.xz + USI artifacts uploaded.
+# Runner requirements: stock ubuntu-24.04 (rootless podman preinstalled; no KVM needed).
+# arm64 flavors cross-build via qemu binfmt — slower but correct; a native arm runner is an
+# optimization, not a requirement.
+name: build
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "*"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        flavor:
+          # hcloud classic: BIOS+UEFI dual-boot raw — boots every family incl. BIOS-only CX; no in-place.
+          - hcloud-gardener_prod-amd64
+          # hcloud USI: EFI-only (CPX/CCX/CAX), A/B in-place-capable via gardenlinux-update.
+          - hcloud-gardener_prod_usi-amd64
+          - hcloud-gardener_prod-arm64
+          - hcloud-gardener_prod_usi-arm64
+          # Robot dedicated: full kernel (igb/AHCI/mdadm), BIOS+UEFI dual, NO cloud-init
+          # (Robot has no metadata service — bootstrap is the onboarding agent's job).
+          - baremetal-robot-gardener_prod-amd64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable qemu binfmt for arm64 cross-builds
+        if: contains(matrix.flavor, 'arm64')
+        run: sudo podman run --rm --privileged multiarch/qemu-user-static --reset -p yes
+
+      # features/_usi/exec.post hard-requires cert/oci-sign.crt + cert/secureboot.{pk,null.pk,
+      # kek,db}.auth (bakes the OCI-signature verification key + secureboot enrollment blobs
+      # into the image). Self-signed dev chain for now; a real release pipeline signs USI
+      # artifacts with THIS key (gardenlinux-update verifies) — key custody TBD
+      # (consider --kms like upstream).
+      - name: Generate signing certs (dev, self-signed)
+        run: ./cert/build oci-sign.crt secureboot.pk.auth secureboot.null.pk.auth secureboot.kek.auth secureboot.db.auth
+
+      - name: Build ${{ matrix.flavor }}
+        run: ./build ${{ matrix.flavor }}
+
+      # hcloud-upload-image consumes .raw.xz directly (--compression xz); keeps artifacts <~1GB.
+      - name: Compress raw images
+        run: xz -T0 -9 .build/*.raw
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.flavor }}
+          path: |
+            .build/*.raw.xz
+            .build/*.uki
+            .build/*.esp.tar
+            .build/*.manifest
+            .build/*.release
+          if-no-files-found: error
+
+  # TODO (next): a `test` job gated on a lab HCLOUD_TOKEN secret — upload the fresh raws via
+  # hcloud-upload-image and run test/run-tests.sh for both arches (see test/README section).
