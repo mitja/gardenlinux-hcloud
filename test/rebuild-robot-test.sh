@@ -66,8 +66,12 @@ check "rescue:ssh-up" true
 
 # 2. wipe + stream image (zero other disks' signatures so no stale bootloader wins BIOS order)
 S "for d in \$(lsblk -dno NAME | grep -v -e '^$DISK\$' -e loop); do wipefs -a /dev/\$d >/dev/null 2>&1; done; blkdiscard -f /dev/$DISK" || { echo "disk prep failed"; exit 1; }
-log "streaming $(du -h "$IMAGE" | cut -f1) image to /dev/$DISK"
-cat "$IMAGE" | S "zstd -dc | dd of=/dev/$DISK bs=4M conv=fsync status=none && sync" || { echo "dd failed"; exit 1; }
+case "$IMAGE" in # local builds ship .zst, CI release assets .xz
+  *.zst) DC="zstd -dc";; *.xz) DC="xz -dc";; *.raw) DC="cat";;
+  *) echo "unknown image compression: $IMAGE"; exit 2;;
+esac
+log "streaming $(du -h "$IMAGE" | cut -f1) image to /dev/$DISK ($DC)"
+cat "$IMAGE" | S "$DC | dd of=/dev/$DISK bs=4M conv=fsync status=none && sync" || { echo "dd failed"; exit 1; }
 check "deploy:dd" true
 
 # 3. inject ssh enablement + this key (image has no cloud-init/metadata — docs/32)

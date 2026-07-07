@@ -1,8 +1,8 @@
 # Modeled on builder_example's CI (checkout → ./build <flavor>): all Hetzner flavors, dev
-# signing certs for the USI variants, .raw.xz + USI artifacts uploaded.
-# Runner requirements: stock ubuntu-24.04 (rootless podman preinstalled; no KVM needed).
-# arm64 flavors cross-build via qemu binfmt — slower but correct; a native arm runner is an
-# optimization, not a requirement.
+# signing certs for the USI variants. On TAG builds the artifacts are published as GitHub
+# RELEASE assets (public, permanent, plain-URL downloadable — hcloud-upload-image consumes
+# them via --image-url); run artifacts (login-only, 90-day expiry) are not a distribution
+# channel. arm64 flavors build NATIVELY on GitHub's free-for-public-repos arm64 runners.
 name: build
 
 on:
@@ -11,28 +11,32 @@ on:
     tags:
       - "*"
 
+permissions:
+  contents: write # gh release create/upload
+
 jobs:
   build:
-    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        flavor:
+        include:
           # hcloud classic: BIOS+UEFI dual-boot raw — boots every family incl. BIOS-only CX; no in-place.
-          - hcloud-gardener_prod-amd64
+          - flavor: hcloud-gardener_prod-amd64
+            runner: ubuntu-24.04
           # hcloud USI: EFI-only (CPX/CCX/CAX), A/B in-place-capable via gardenlinux-update.
-          - hcloud-gardener_prod_usi-amd64
-          - hcloud-gardener_prod-arm64
-          - hcloud-gardener_prod_usi-arm64
+          - flavor: hcloud-gardener_prod_usi-amd64
+            runner: ubuntu-24.04
+          - flavor: hcloud-gardener_prod-arm64
+            runner: ubuntu-24.04-arm
+          - flavor: hcloud-gardener_prod_usi-arm64
+            runner: ubuntu-24.04-arm
           # Robot dedicated: full kernel (igb/AHCI/mdadm), BIOS+UEFI dual, NO cloud-init
           # (Robot has no metadata service — bootstrap is the onboarding agent's job).
-          - baremetal-robot-gardener_prod-amd64
+          - flavor: baremetal-robot-gardener_prod-amd64
+            runner: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Enable qemu binfmt for arm64 cross-builds
-        if: contains(matrix.flavor, 'arm64')
-        run: sudo podman run --rm --privileged multiarch/qemu-user-static --reset -p yes
 
       # features/_usi/exec.post hard-requires cert/oci-sign.crt + cert/secureboot.{pk,null.pk,
       # kek,db}.auth (bakes the OCI-signature verification key + secureboot enrollment blobs
@@ -45,16 +49,16 @@ jobs:
       - name: Build ${{ matrix.flavor }}
         run: ./build ${{ matrix.flavor }}
 
-      # hcloud-upload-image consumes .raw.xz directly (--compression xz); keeps artifacts <~1GB.
+      # hcloud-upload-image consumes .raw.xz directly (--compression xz); keeps assets <~1GB.
       - name: Compress raw images
         run: xz -T0 -9 .build/*.raw
 
-      - name: Upload artifacts
+      # Run artifacts: CI debugging + workflow_dispatch builds. include-hidden-files because
+      # the builder's output dir .build/ is hidden and upload-artifact@v4 skips hidden paths.
+      - name: Upload run artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.flavor }}
-          # the builder writes to .build/ — a HIDDEN dir, which upload-artifact@v4 silently
-          # excludes unless include-hidden-files is set (bit us on the first tag build)
           include-hidden-files: true
           path: |
             .build/*.raw.xz
@@ -64,5 +68,14 @@ jobs:
             .build/*.release
           if-no-files-found: error
 
-  # TODO (next): a `test` job gated on a lab HCLOUD_TOKEN secret — upload the fresh raws via
-  # hcloud-upload-image and run test/run-tests.sh for both arches (see test/README section).
+      # Tag builds additionally publish to the GitHub Release — the actual distribution
+      # channel. Matrix jobs race on `release create`; the `|| true` + `upload --clobber`
+      # combination makes that race harmless.
+      - name: Publish release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes "Garden Linux flavors for Hetzner Cloud & Robot — see README. Tag scheme: <GL-version>-<config-revision>." 2>/dev/null || true
+          gh release upload "$GITHUB_REF_NAME" --clobber .build/*.raw.xz .build/*.manifest .build/*.release
+          ls .build/*.uki >/dev/null 2>&1 && gh release upload "$GITHUB_REF_NAME" --clobber .build/*.uki .build/*.esp.tar || true
