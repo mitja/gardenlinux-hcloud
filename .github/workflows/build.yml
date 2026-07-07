@@ -53,6 +53,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.flavor }}
+          # the builder writes to .build/ — a HIDDEN dir, which upload-artifact@v4 silently
+          # excludes unless include-hidden-files is set (bit us on the first tag build)
+          include-hidden-files: true
           path: |
             .build/*.raw.xz
             .build/*.uki
