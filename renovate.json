@@ -1,0 +1,21 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Watch Garden Linux upstream — a bump PR = run hack/vendor-upstream.sh + the docs/73 GL train, never a plain merge",
+      "managerFilePatterns": ["/^VENDOR\\.md$/"],
+      "matchStrings": ["<!-- renovate: datasource=(?<datasource>[a-z-]+) depName=(?<depName>\\S+) -->\\s*\\nvendored-upstream: (?<currentValue>\\S+)"],
+      "versioningTemplate": "semver"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "The vendored GL version never automerges — it drives the docs/73 image train",
+      "matchDepNames": ["gardenlinux/gardenlinux"],
+      "automerge": false,
+      "dependencyDashboardApproval": true
+    }
+  ]
+}
