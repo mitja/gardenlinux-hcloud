@@ -49,7 +49,7 @@ as-is. Instead it triggers the docs/73 Garden Linux train in the (private) lands
 
 ## Release watch marker
 
-Renovate (hosted GitHub App, `renovate.json` custom regex manager) watches upstream tags via
+Renovate (self-hosted, `renovate.json` custom regex manager) watches upstream tags via
 this block. Upstream tags are the bare version since the 2150 line (3-segment,
 e.g. `2150.6.0`); legacy 2-segment (`1877.20`) and `beta_*` tags are excluded by strict
 semver versioning.
