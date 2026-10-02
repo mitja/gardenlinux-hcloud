@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Garden Linux hcloud image test suite (docs/73 GL1+; NOTES.md records executed runs).
+# Garden Linux hcloud image test suite (NOTES.md records executed runs).
 #
 # Boots real servers from a candidate snapshot and exercises the scenarios that bit us on
-# the Ubuntu image (docs/52 NAT/private-net, docs/50 §5.1 route race, runc kill-denial,
-# volume hotplug). Designed for every image update — GL's release cadence is 2-5 weeks —
-# runnable locally or from CI (needs only: hcloud CLI, jq, ssh, a lab-project HCLOUD_TOKEN).
+# the Ubuntu image: NAT/private-net, the route race, runc
+# kill-denial, volume hotplug. Designed for every image update — GL's release cadence is
+# 2-5 weeks — runnable locally or from CI (needs only: hcloud CLI, jq, ssh, a lab-project
+# HCLOUD_TOKEN).
 #
 #   HCLOUD_TOKEN=... ./run-tests.sh --image <snapshot-id> [--arch x86|arm] \
 #       [--scenarios basic,volume,hot-attach,container,reboot,private-nat] [--location nbg1]
@@ -181,7 +182,7 @@ scenario_reboot() {
 }
 
 # =========================================================================== private-nat
-# docs/52: Hetzner private DHCP hands out ONLY the IP + gateway/CIDR routes — NO default
+# Hetzner private DHCP hands out ONLY the IP + gateway/CIDR routes — NO default
 # route, NO DNS, NO metadata route (lease dump verified 2026-07-07). Fully-private servers
 # (--without-ipv4 --without-ipv6) CANNOT reach 169.254.169.254 at all (probe: timeout via
 # private gw too) => no cloud-init user_data => unbootstrappable; that mode is a documented
@@ -190,7 +191,7 @@ scenario_reboot() {
 # a CGNAT 100.64/10 DHCPv4 lease on the public NIC including an explicit 169.254.169.254
 # route (verified 2026-07-07) — metadata + user_data work WITHOUT public IPv4 by design.
 # The image must (a) DHCP the private IP, (b) carry static resolvers (our DNS trim),
-# (c) accept a persistent networkd route drop-in (docs/50 §5.1 race fix) and reach v4
+# (c) accept a persistent networkd route drop-in (the race fix) and reach v4
 # internet via the NAT box. Also asserts the GL private-NIC *name* — Ubuntu templates
 # match ens10, GL names it enp7s0: the MCM user_data template must cover both.
 scenario_private_nat() {
@@ -230,10 +231,10 @@ EOF
   check "private-nat:sut-bootstraps-ipv6-only" wait_ssh "$privip" "$natip"
   check "private-nat:dhcp-private-ip" ssh_via "$natip" "$privip" "ip -4 -brief addr show | grep -q '$privip'"
   privname=$(ssh_via "$natip" "$privip" "ip -4 -brief addr show | awk '/$privip/{print \$1}'" 2>/dev/null)
-  log "  private NIC name on GL: ${privname:-unknown} (Ubuntu templates assume ens10 — docs/52 §3)"
+  log "  private NIC name on GL: ${privname:-unknown} (Ubuntu templates assume ens10)"
   check "private-nat:no-v4-default-route-handed" ssh_via "$natip" "$privip" '! ip -4 route show default | grep -q .'
   check "private-nat:static-dns-baked" ssh_via "$natip" "$privip" "resolvectl dns $privname | grep -q 185.12.64.1"
-  # the docs/50 §5.1 fix, GL edition: a dedicated .network file that FULLY owns the private
+  # the race fix, GL edition: a dedicated .network file that FULLY owns the private
   # NIC (DHCP + static default route). networkd applies only the FIRST matching .network
   # file per link, so a route-only file would displace 99-default and drop the NIC's DHCP —
   # the exact overwrite-the-IP failure class this scenario exists to catch. Persistent

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# vendor-upstream.sh — sync the vendored Garden Linux bits this config dir builds on (docs/73 §2).
+# vendor-upstream.sh — sync the vendored Garden Linux bits this config dir builds on.
 #
 # WHY VENDORING: gardenlinux/builder mounts ONLY the config dir's own features/ into the build
 # container (see `build`: `-v .../features/$f:/builder/features/$f:ro`), and parse_features asserts
@@ -24,7 +24,7 @@
 #         GL_SRC=/path/to/checkout hack/vendor-upstream.sh   (reuse an existing checkout, must be at $GL_TAG)
 set -euo pipefail
 
-GL_TAG="${GL_TAG:-2150.6.0}"   # docs/73 GL0: line = 2150.x; keep in sync with ./get_version
+GL_TAG="${GL_TAG:-2150.6.0}"   # GL0: line = 2150.x; keep in sync with ./get_version
 dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # FEATURES = transitive include+exclude closure of {cloud, gardener, _prod, _usi} at 2150.6.0

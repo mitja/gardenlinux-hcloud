@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Grandfathered-pet rebuild test: validates the docs/38 price-safe family-swap path
+# Grandfathered-pet rebuild test: validates the price-safe family-swap path
 # (Gardener "roll" = hcloud `rebuild`, same server ID/type/price) with a GL snapshot —
 # and doubles as the BIOS (CX*) / arm64 (CAX*) firmware coverage the throwaway suite
 # (run-tests.sh) cannot provide, since those families aren't (all) orderable new.
 #
 #   HCLOUD_TOKEN=... ./rebuild-pet-test.sh --server <id> --image <snapshot-id> [--power-off-after]
 #
-# PRICE-SAFETY CONTRACT (docs/37/38): this script NEVER calls `server delete` or
+# PRICE-SAFETY CONTRACT: this script NEVER calls `server delete` or
 # `change_type` — the only two repricing events. It temporarily lifts REBUILD protection
 # only, keeps DELETE protection untouched, and re-asserts both at the end.
 #
@@ -53,7 +53,7 @@ trap 'finish; rm -rf "$WORK"' EXIT
 
 # 1. rebuild (price-safe; lifts rebuild protection only)
 [ "$PROT_REBUILD" = "true" ] && hcloud server disable-protection "$SERVER" rebuild >/dev/null
-log "rebuilding $NAME from image $IMAGE (same server id — the docs/38 Layer-2 swap)"
+log "rebuilding $NAME from image $IMAGE (same server id — the Layer-2 swap)"
 hcloud server rebuild "$SERVER" --image "$IMAGE" >/dev/null || { echo "rebuild failed"; exit 1; }
 check "rebuild:accepted" true
 

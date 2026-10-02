@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Robot (dedicated bare-metal) re-image + boot test for the GL metal flavor — the dedicated
-# analogue of rebuild-pet-test.sh, per docs/32/06. Deploy path = the only one Robot has:
+# analogue of rebuild-pet-test.sh. Deploy path = the only one Robot has:
 # rescue-boot + stream the raw image to disk (installimage has no custom-image support).
 #
 #   ROBOT_USER=... ROBOT_PASSWORD=... ./rebuild-robot-test.sh \
@@ -74,7 +74,7 @@ log "streaming $(du -h "$IMAGE" | cut -f1) image to /dev/$DISK ($DC)"
 cat "$IMAGE" | S "$DC | dd of=/dev/$DISK bs=4M conv=fsync status=none && sync" || { echo "dd failed"; exit 1; }
 check "deploy:dd" true
 
-# 3. inject ssh enablement + this key (image has no cloud-init/metadata — docs/32)
+# 3. inject ssh enablement + this key (image has no cloud-init/metadata)
 ssh-keygen -y -f "$KEY" | S '
 set -e
 blockdev --rereadpt /dev/'"$DISK"' 2>/dev/null; sleep 2
@@ -100,7 +100,7 @@ check "boot:containerd-2.2" S 'containerd --version | grep -q " 2\.2\."'
 check "boot:8021q-loadable" S 'modprobe -n 8021q'
 log "  kernel: $(S uname -r 2>/dev/null) · firmware: $(S 'bootctl status 2>/dev/null | grep -i "^\s*Firmware:" || echo BIOS' 2>/dev/null)"
 
-# 5. optional vSwitch/VLAN validation (docs/32/06: ping a PEER, never the gateway — it drops ICMP)
+# 5. optional vSwitch/VLAN validation (ping a PEER, never the gateway — it drops ICMP)
 if [ -n "$VSWITCH" ] && [ -n "$VLAN" ] && [ -n "$VLANIP" ] && [ -n "$PEER" ]; then
   curl -sf -u "$ROBOT_USER:$ROBOT_PASSWORD" -X POST "$RAPI/vswitch/$VSWITCH/server" -d "server[]=$SERVER" >/dev/null
   for i in $(seq 1 18); do
